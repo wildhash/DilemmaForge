@@ -555,14 +555,16 @@ Devvit.addSchedulerJob({
   onRun: async (event, context) => {
     console.log('Running midnight reveal job');
     
-    // This would process all active posts
-    // For MVP, we'll handle this on-demand when users check results
+    // NOTE: For this MVP/demo, results are finalized on-demand when users load stats
+    // This ensures points are awarded correctly without needing to track all active posts
+    // The finalizeDailyResults() and awardUserPoints() functions handle this automatically
+    // when a user opens the post after midnight UTC
     
-    // In production, you'd:
-    // 1. Get all active post IDs
-    // 2. For each post, calculate final results
-    // 3. Award points to users based on their votes
-    // 4. Update streaks
+    // Future production enhancement could iterate through active posts:
+    // 1. Get all active post IDs from a registry
+    // 2. For each post, call finalizeDailyResults(context, postId, yesterday)
+    // 3. Iterate through all voters and call awardUserPoints()
+    // 4. Update streaks for all users
     
     return;
   },

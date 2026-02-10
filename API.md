@@ -465,6 +465,90 @@ console.error('Vote failed:', { userId, error });
 
 ---
 
+## Midnight Reveal & Point Distribution
+
+### Overview
+DilemmaForge implements an on-demand finalization system that awards points when users view results after midnight UTC, rather than using a scheduled batch process.
+
+### Finalization Functions
+
+#### finalizeDailyResults()
+Finalizes a day's results and calculates point distribution.
+
+```typescript
+async function finalizeDailyResults(
+  context: any,
+  postId: string,
+  day: string
+): Promise<void>
+```
+
+**Process**:
+1. Check if day is already finalized (idempotent)
+2. Get cooperate and defect vote counts
+3. Calculate outcome using `calculateResults()`
+4. Store finalized results in Redis
+5. Mark day as finalized
+
+**Key**: `post:{postId}:day:{day}:finalized`
+
+#### awardUserPoints()
+Awards points to a specific user for a finalized day.
+
+```typescript
+async function awardUserPoints(
+  context: any,
+  postId: string,
+  userId: string,
+  day: string
+): Promise<void>
+```
+
+**Process**:
+1. Check if points already awarded (idempotent)
+2. Get user's vote for the day
+3. Get finalized results
+4. Award points based on vote choice and outcome
+5. Mark vote as awarded
+
+**Points Awarded**:
+- Cooperators get `pointsForCooperators` from results
+- Defectors get `pointsForDefectors` from results
+
+### When Finalization Happens
+Results are finalized automatically when:
+1. A user loads their stats after midnight UTC
+2. The system detects yesterday's results aren't finalized yet
+3. `finalizeDailyResults()` is called for yesterday
+4. `awardUserPoints()` is called for the viewing user
+
+### Benefits of On-Demand Approach
+- ✅ No need to track all active posts
+- ✅ Scales naturally with user activity
+- ✅ Idempotent operations prevent duplicate awards
+- ✅ Perfect for hackathon/demo scenarios
+- ✅ Each user gets points when they next visit
+
+### Scheduler Job
+A scheduler job is registered but currently unused:
+```typescript
+Devvit.addSchedulerJob({
+  name: 'midnight_reveal',
+  onRun: async (event, context) => {
+    // Future: Could process all active posts here
+    return;
+  },
+});
+```
+
+For production scale, the scheduler could:
+1. Maintain a registry of active posts
+2. Iterate through all posts at midnight UTC
+3. Call `finalizeDailyResults()` for each
+4. Award points to all voters
+
+---
+
 ## Support
 
 For questions or issues:
