@@ -1,0 +1,21 @@
+{
+  "name": "dilemmaforge",
+  "version": "1.0.0",
+  "description": "Reddit Devvit daily game - mobile-first Prisoner's Dilemma with swipe voting",
+  "main": "src/main.tsx",
+  "scripts": {
+    "dev": "devvit playtest",
+    "build": "devvit build",
+    "upload": "devvit upload",
+    "install": "devvit install"
+  },
+  "keywords": ["devvit", "game", "prisoners-dilemma", "reddit"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@devvit/protos": "^0.10.0",
+    "@devvit/public-api": "^0.10.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {}
+}
