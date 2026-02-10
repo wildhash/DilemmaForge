@@ -8,6 +8,9 @@
     "moduleResolution": "node",
     "esModuleInterop": true,
     "skipLibCheck": true,
+    // Note: strict mode disabled for Devvit compatibility
+    // Devvit's types and JSX runtime have some quirks that cause false positives
+    // For production, consider enabling strictNullChecks and strictFunctionTypes individually
     "strict": false,
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,

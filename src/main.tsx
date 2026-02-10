@@ -312,7 +312,8 @@ Devvit.addCustomPostType({
       } catch (error) {
         console.error('Failed to submit vote:', error);
         context.ui.showToast({
-          text: 'Failed to submit vote. Please try again.',
+          text: '❌ Failed to submit vote. Please try again.',
+          appearance: 'neutral',
         });
       }
     };
