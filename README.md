@@ -178,6 +178,43 @@ post:{postId}:user:{userId}:history                # User vote history
 
 ## 📊 Demo Script
 
+### 🎬 How to Demo in Under 2 Minutes
+
+**Quick Demo for Judges/Reviewers:**
+
+1. **Install** (30 seconds)
+   ```bash
+   npm install -g devvit
+   devvit login
+   cd DilemmaForge
+   npm run dev
+   ```
+
+2. **Create Post** (15 seconds)
+   - In the playtest UI, use the menu to create a DilemmaForge post
+   - Open the newly created post
+
+3. **Cast Vote** (30 seconds)
+   - See the onboarding tooltip explaining the game
+   - Choose either Cooperate 🤝 or Defect ⚔️
+   - Observe vote confirmation and locked state
+   - See real-time vote counts update
+
+4. **Check Stats** (30 seconds)
+   - View your score, streak, and total votes
+   - Click "View History" to see emoji grid
+   - Test the "Copy" button for share functionality
+
+5. **Demo Result States** (15 seconds)
+   - Explain the three outcomes:
+     - ≥70% cooperate = +3 all
+     - ≥70% defect = +1 all
+     - Mixed = defectors +5, cooperators 0
+
+**Total Time: ~2 minutes** ✅
+
+---
+
 ### Test Scenario 1: First Vote (Cooperate)
 
 ```bash

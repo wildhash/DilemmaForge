@@ -33,11 +33,113 @@ const KEYS = {
     `post:${postId}:day:${day}:defect`,
   dailyResults: (postId: string, day: string) => 
     `post:${postId}:day:${day}:results`,
+  dailyFinalized: (postId: string, day: string) =>
+    `post:${postId}:day:${day}:finalized`,
   userStats: (postId: string, userId: string) => 
     `post:${postId}:user:${userId}:stats`,
   userHistory: (postId: string, userId: string) => 
     `post:${postId}:user:${userId}:history`,
 };
+
+// Helper function to finalize daily results and award points
+async function finalizeDailyResults(
+  context: any,
+  postId: string,
+  day: string
+): Promise<void> {
+  const finalizedKey = KEYS.dailyFinalized(postId, day);
+  const alreadyFinalized = await context.redis.get(finalizedKey);
+  
+  if (alreadyFinalized) {
+    return; // Already processed
+  }
+  
+  // Get vote counts
+  const cooperateKey = KEYS.dailyCooperateCount(postId, day);
+  const defectKey = KEYS.dailyDefectCount(postId, day);
+  
+  const [cooperateCountStr, defectCountStr] = await Promise.all([
+    context.redis.get(cooperateKey),
+    context.redis.get(defectKey),
+  ]);
+  
+  const cooperateCount = parseInt(cooperateCountStr || '0');
+  const defectCount = parseInt(defectCountStr || '0');
+  
+  if (cooperateCount === 0 && defectCount === 0) {
+    return; // No votes to finalize
+  }
+  
+  // Calculate results
+  const { outcome, pointsForCooperators, pointsForDefectors } = 
+    calculateResults(cooperateCount, defectCount);
+  
+  // Store finalized results
+  const results: DailyResults = {
+    day,
+    totalVotes: cooperateCount + defectCount,
+    cooperateCount,
+    defectCount,
+    cooperatePercent: (cooperateCount / (cooperateCount + defectCount)) * 100,
+    defectPercent: (defectCount / (cooperateCount + defectCount)) * 100,
+    outcome,
+    pointsForCooperators,
+    pointsForDefectors,
+  };
+  
+  await context.redis.set(KEYS.dailyResults(postId, day), JSON.stringify(results));
+  await context.redis.set(finalizedKey, 'true');
+  
+  console.log(`Finalized results for ${day}: ${outcome}`);
+}
+
+// Helper function to award points to a user for a finalized day
+async function awardUserPoints(
+  context: any,
+  postId: string,
+  userId: string,
+  day: string
+): Promise<void> {
+  // Check if already awarded
+  const voteKey = KEYS.userVote(postId, userId, day);
+  const voteData = await context.redis.get(voteKey);
+  
+  if (!voteData) return;
+  
+  const vote: UserVote = JSON.parse(voteData);
+  
+  // Check if points already awarded
+  if ((vote as any).pointsAwarded) return;
+  
+  // Get finalized results
+  const resultsKey = KEYS.dailyResults(postId, day);
+  const resultsData = await context.redis.get(resultsKey);
+  
+  if (!resultsData) return;
+  
+  const results: DailyResults = JSON.parse(resultsData);
+  
+  // Determine points based on user's choice
+  const points = vote.choice === 'cooperate' 
+    ? results.pointsForCooperators 
+    : results.pointsForDefectors;
+  
+  // Update user stats with points
+  const statsKey = KEYS.userStats(postId, userId);
+  const statsData = await context.redis.get(statsKey);
+  
+  if (statsData) {
+    const stats: UserStats = JSON.parse(statsData);
+    stats.totalScore += points;
+    await context.redis.set(statsKey, JSON.stringify(stats));
+  }
+  
+  // Mark vote as awarded
+  (vote as any).pointsAwarded = true;
+  await context.redis.set(voteKey, JSON.stringify(vote));
+  
+  console.log(`Awarded ${points} points to user ${userId} for ${day}`);
+}
 
 // Custom Post Component
 Devvit.addCustomPostType({
@@ -117,8 +219,22 @@ Devvit.addCustomPostType({
       const statsKey = KEYS.userStats(postId, userId);
       const statsData = await context.redis.get(statsKey);
       
-      if (statsData) {
-        return JSON.parse(statsData) as UserStats;
+      // Check and finalize yesterday if needed
+      const yesterday = new Date();
+      yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+      const yesterdayStr = yesterday.toISOString().split('T')[0];
+      
+      // Try to finalize yesterday's results
+      await finalizeDailyResults(context, postId, yesterdayStr);
+      
+      // Award points for yesterday if user voted
+      await awardUserPoints(context, postId, userId, yesterdayStr);
+      
+      // Reload stats after potential point award
+      const updatedStatsData = await context.redis.get(statsKey);
+      
+      if (updatedStatsData) {
+        return JSON.parse(updatedStatsData) as UserStats;
       }
       
       return {
@@ -197,7 +313,6 @@ Devvit.addCustomPostType({
         console.error('Failed to submit vote:', error);
         context.ui.showToast({
           text: 'Failed to submit vote. Please try again.',
-          appearance: 'error',
         });
       }
     };
@@ -227,6 +342,14 @@ Devvit.addCustomPostType({
 
           {!hasVotedToday ? (
             <vstack alignment="center middle" gap="large" width="100%">
+              <vstack gap="small" padding="medium" backgroundColor="blue-50" cornerRadius="medium" width="100%">
+                <text size="small" weight="bold">💡 How it works:</text>
+                <text size="small">
+                  This is a daily Prisoner's Dilemma. Short-term betrayal vs long-term trust.
+                  Your choice affects everyone's outcome!
+                </text>
+              </vstack>
+              
               <text size="large" weight="bold" alignment="center">
                 Make Your Choice Today
               </text>
@@ -384,7 +507,24 @@ Devvit.addCustomPostType({
           <spacer size="small" />
 
           <vstack gap="small" width="100%">
-            <text size="medium" weight="bold">Emoji Grid</text>
+            <hstack alignment="space-between middle" width="100%">
+              <text size="medium" weight="bold">Emoji Grid</text>
+              <button 
+                size="small" 
+                onPress={() => {
+                  if (parsedHistory.length > 0) {
+                    const grid = generateShareGrid(parsedHistory.slice(-30));
+                    // Note: Clipboard API not available in Devvit, show toast instead
+                    context.ui.showToast({
+                      text: 'Share your streak: ' + grid.split('\n')[0],
+                      appearance: 'success',
+                    });
+                  }
+                }}
+              >
+                📋 Copy
+              </button>
+            </hstack>
             <text style="monospace" size="small">
               {parsedHistory.length > 0
                 ? generateShareGrid(parsedHistory.slice(-30))
