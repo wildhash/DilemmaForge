@@ -10,6 +10,11 @@ import {
   getEmojiForChoice,
   generateShareGrid,
 } from './utils/game.js';
+import {
+  calculateStreak,
+  updateUserStats,
+  isValidChoice,
+} from './utils/streaks.js';
 
 // Configure Devvit
 Devvit.configure({
@@ -126,7 +131,7 @@ Devvit.addCustomPostType({
 
     // Handle vote submission
     const handleVote = async (choice: Choice) => {
-      if (!choice || hasVotedToday) return;
+      if (!choice || hasVotedToday || !isValidChoice(choice)) return;
 
       try {
         const voteKey = KEYS.userVote(postId, userId, currentDay);
@@ -152,8 +157,28 @@ Devvit.addCustomPostType({
         const historyKey = KEYS.userHistory(postId, userId);
         const historyData = await context.redis.get(historyKey);
         const history = historyData ? JSON.parse(historyData) : [];
-        history.push({ day: currentDay, choice });
+        const newHistoryEntry = { day: currentDay, choice };
+        history.push(newHistoryEntry);
         await context.redis.set(historyKey, JSON.stringify(history));
+        
+        // Update user stats (without points yet - awarded at midnight)
+        const statsKey = KEYS.userStats(postId, userId);
+        const currentStatsData = await context.redis.get(statsKey);
+        const currentStats: UserStats = currentStatsData 
+          ? JSON.parse(currentStatsData)
+          : {
+              totalScore: 0,
+              currentStreak: 0,
+              longestStreak: 0,
+              totalVotes: 0,
+              cooperateCount: 0,
+              defectCount: 0,
+              history: [],
+            };
+        
+        // Update stats (points will be added at midnight reveal)
+        const updatedStats = updateUserStats(currentStats, newHistoryEntry, 0);
+        await context.redis.set(statsKey, JSON.stringify(updatedStats));
         
         setHasVotedToday(true);
         setUserChoice(choice);
@@ -164,6 +189,7 @@ Devvit.addCustomPostType({
           appearance: 'success',
         });
       } catch (error) {
+        console.error('Failed to submit vote:', error);
         context.ui.showToast({
           text: 'Failed to submit vote. Please try again.',
           appearance: 'error',
@@ -329,6 +355,18 @@ Devvit.addCustomPostType({
 
     // Render history view
     if (currentView === 'history') {
+      // Parse history entries
+      const parsedHistory = userStats?.history?.map(h => {
+        if (typeof h === 'string') {
+          try {
+            return JSON.parse(h);
+          } catch {
+            return { day: h, choice: 'cooperate' as Choice };
+          }
+        }
+        return h;
+      }) || [];
+
       return (
         <vstack alignment="center top" height="100%" gap="medium" padding="large">
           <hstack alignment="start middle" width="100%">
@@ -343,11 +381,8 @@ Devvit.addCustomPostType({
           <vstack gap="small" width="100%">
             <text size="medium" weight="bold">Emoji Grid</text>
             <text style="monospace" size="small">
-              {userStats?.history && userStats.history.length > 0
-                ? generateShareGrid(userStats.history.slice(-30).map(h => ({ 
-                    day: h, 
-                    choice: h.includes('cooperate') ? 'cooperate' : 'defect' 
-                  })))
+              {parsedHistory.length > 0
+                ? generateShareGrid(parsedHistory.slice(-30))
                 : 'No votes yet'}
             </text>
           </vstack>
