@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # DilemmaForge Demo Script
 # This script provides automated testing scenarios for the DilemmaForge game

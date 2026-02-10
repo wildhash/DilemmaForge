@@ -344,6 +344,7 @@
       let isDragging = false;
 
       card.addEventListener('touchstart', (e) => {
+        e.preventDefault(); // Prevent unwanted scrolling/zooming
         startX = e.touches[0].clientX;
         isDragging = true;
         card.classList.add('swiping');
@@ -351,6 +352,7 @@
 
       card.addEventListener('touchmove', (e) => {
         if (!isDragging) return;
+        e.preventDefault(); // Prevent unwanted scrolling/zooming
         
         currentX = e.touches[0].clientX;
         const diff = currentX - startX;

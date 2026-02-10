@@ -78,12 +78,17 @@ Devvit.addCustomPostType({
         return JSON.parse(resultsData) as DailyResults;
       }
       
-      // Calculate current counts
+      // Calculate current counts (parallel fetch for better performance)
       const cooperateKey = KEYS.dailyCooperateCount(postId, currentDay);
       const defectKey = KEYS.dailyDefectCount(postId, currentDay);
       
-      const cooperateCount = parseInt((await context.redis.get(cooperateKey)) || '0');
-      const defectCount = parseInt((await context.redis.get(defectKey)) || '0');
+      const [cooperateCountStr, defectCountStr] = await Promise.all([
+        context.redis.get(cooperateKey),
+        context.redis.get(defectKey),
+      ]);
+      
+      const cooperateCount = parseInt(cooperateCountStr || '0');
+      const defectCount = parseInt(defectCountStr || '0');
       
       const totalVotes = cooperateCount + defectCount;
       const cooperatePercent = totalVotes > 0 ? (cooperateCount / totalVotes) * 100 : 0;

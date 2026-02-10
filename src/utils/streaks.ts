@@ -78,6 +78,8 @@ export function updateUserStats(
     { day: newVote.day, choice: newVote.choice },
   ];
 
+  // Parse history entries: Some may be strings (legacy format), others are objects
+  // Default to 'cooperate' for unparseable entries to maintain backwards compatibility
   const { currentStreak, longestStreak } = calculateStreak(
     history.map(h => typeof h === 'string' ? { day: h, choice: 'cooperate' as Choice } : h)
   );
