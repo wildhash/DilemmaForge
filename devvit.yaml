@@ -1,0 +1,11 @@
+name: DilemmaForge
+description: Mobile-first daily Prisoner's Dilemma game with swipe voting
+version: 1.0.0
+main: src/main.tsx
+
+permissions:
+  - redisStorage
+  - scheduler
+
+redis:
+  useRedis: true
