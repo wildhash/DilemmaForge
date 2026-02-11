@@ -251,7 +251,11 @@ async function awardUserPoints(
       await tx.multi();
       await tx.incrBy(scoreKey, points);
       await tx.set(voteKey, JSON.stringify(freshVote));
-      await tx.exec();
+      const execResult = await tx.exec();
+      if (!execResult || execResult.length < 2) {
+        console.error(`Award transaction aborted for user ${userId} on ${day}`);
+        return;
+      }
       
       console.log(`Awarded ${points} points to user ${userId} for ${day}`);
     } finally {
