@@ -27,8 +27,8 @@ Devvit.configure({
 /**
  * Helper to safely parse JSON with error handling.
  * @param data - String to parse
- * @param fallback - Value to return if parsing fails
- * @returns Parsed object or fallback
+* @param fallback - Value to return if parsing fails (optional)
+* @returns Parsed object, fallback, or null (if no fallback provided)
  */
 function safeJSONParse<T>(data: string | null | undefined): T | null;
 function safeJSONParse<T>(data: string | null | undefined, fallback: T): T;
@@ -42,6 +42,26 @@ function safeJSONParse<T>(
   } catch (error) {
     console.error('JSON parse error:', error);
     return fallback ?? null;
+  }
+}
+
+function createLockId(): string {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function releaseLock(
+  context: any,
+  lockKey: string,
+  lockId: string,
+  label: string
+): Promise<void> {
+  try {
+    const currentLockId = await context.redis.get(lockKey);
+    if (currentLockId === lockId) {
+      await context.redis.del(lockKey);
+    }
+  } catch (error) {
+    console.error(`Error releasing ${label} lock:`, error);
   }
 }
 
@@ -60,7 +80,8 @@ async function finalizeDailyResults(
 ): Promise<void> {
   try {
     const lockKey = REDIS_KEYS.dailyFinalizeLock(postId, day);
-    const lockAcquired = await context.redis.set(lockKey, '1', {
+    const lockId = createLockId();
+    const lockAcquired = await context.redis.set(lockKey, lockId, {
       nx: true,
       expiration: new Date(Date.now() + 30_000),
     });
@@ -130,7 +151,7 @@ async function finalizeDailyResults(
       
       console.log(`Finalized results for ${day}: ${outcome} (${cooperateCount}C/${defectCount}D)`);
     } finally {
-      await context.redis.del(lockKey);
+      await releaseLock(context, lockKey, lockId, 'finalize');
     }
   } catch (error) {
     console.error(`Error finalizing results for ${day}:`, error);
@@ -154,8 +175,56 @@ async function awardUserPoints(
   day: string
 ): Promise<void> {
   try {
+    // Check if already awarded
+    const voteKey = REDIS_KEYS.userVote(postId, userId, day);
+    const voteData = await context.redis.get(voteKey);
+    
+    if (!voteData) return;
+    
+    const vote = safeJSONParse<UserVote>(voteData);
+    if (!vote?.choice) {
+      console.error(`Invalid vote data for user ${userId} on ${day}`);
+      return;
+    }
+    
+    if (vote.pointsAwarded) return;
+    
+    // Ensure results exist before taking the per-user award lock.
+    const resultsKey = REDIS_KEYS.dailyResults(postId, day);
+    let resultsData = await context.redis.get(resultsKey);
+    
+    if (!resultsData) {
+      await finalizeDailyResults(context, postId, day);
+      resultsData = await context.redis.get(resultsKey);
+    }
+
+    if (!resultsData) return;
+    
+    const results = safeJSONParse<DailyResults>(resultsData);
+    if (!results) {
+      console.error(`Invalid results data for ${day}`);
+      return;
+    }
+    
+    // Determine points based on user's choice
+    const points = vote.choice === 'cooperate' 
+      ? results.pointsForCooperators 
+      : results.pointsForDefectors;
+
+    const scoreKey = REDIS_KEYS.userScore(postId, userId);
+    const existingScore = await context.redis.get(scoreKey);
+    if (!existingScore) {
+      const statsKey = REDIS_KEYS.userStats(postId, userId);
+      const statsData = await context.redis.get(statsKey);
+      const stats = safeJSONParse<UserStats>(statsData);
+      if (stats && typeof stats.totalScore === 'number' && !isNaN(stats.totalScore)) {
+        await context.redis.set(scoreKey, String(stats.totalScore), { nx: true });
+      }
+    }
+
     const lockKey = REDIS_KEYS.userAwardLock(postId, userId, day);
-    const lockAcquired = await context.redis.set(lockKey, '1', {
+    const lockId = createLockId();
+    const lockAcquired = await context.redis.set(lockKey, lockId, {
       nx: true,
       expiration: new Date(Date.now() + 30_000),
     });
@@ -165,66 +234,28 @@ async function awardUserPoints(
     }
 
     try {
-      // Check if already awarded
-      const voteKey = REDIS_KEYS.userVote(postId, userId, day);
-      const voteData = await context.redis.get(voteKey);
-      
-      if (!voteData) return;
-      
-      const vote = safeJSONParse<UserVote>(voteData);
-      if (!vote?.choice) {
+      const freshVoteData = await context.redis.get(voteKey);
+      const freshVote = safeJSONParse<UserVote>(freshVoteData);
+
+      if (!freshVote?.choice) {
         console.error(`Invalid vote data for user ${userId} on ${day}`);
         return;
       }
-      
-      // Check if points already awarded
-      if (vote.pointsAwarded) return;
-      
-      // Get finalized results
-      const resultsKey = REDIS_KEYS.dailyResults(postId, day);
-      let resultsData = await context.redis.get(resultsKey);
-      
-      if (!resultsData) {
-        await finalizeDailyResults(context, postId, day);
-        resultsData = await context.redis.get(resultsKey);
-      }
 
-      if (!resultsData) return;
-      
-      const results = safeJSONParse<DailyResults>(resultsData);
-      if (!results) {
-        console.error(`Invalid results data for ${day}`);
-        return;
-      }
-      
-      // Determine points based on user's choice
-      const points = vote.choice === 'cooperate' 
-        ? results.pointsForCooperators 
-        : results.pointsForDefectors;
+      if (freshVote.pointsAwarded) return;
 
-      vote.pointsAwarded = true;
-      vote.pointsAwardedAt = Date.now();
-
-      const scoreKey = REDIS_KEYS.userScore(postId, userId);
-      const existingScore = await context.redis.get(scoreKey);
-      if (!existingScore) {
-        const statsKey = REDIS_KEYS.userStats(postId, userId);
-        const statsData = await context.redis.get(statsKey);
-        const stats = safeJSONParse<UserStats>(statsData);
-        if (stats && typeof stats.totalScore === 'number' && !isNaN(stats.totalScore)) {
-          await context.redis.set(scoreKey, String(stats.totalScore), { nx: true });
-        }
-      }
+      freshVote.pointsAwarded = true;
+      freshVote.pointsAwardedAt = Date.now();
 
       const tx = await context.redis.watch(voteKey, scoreKey);
       await tx.multi();
       await tx.incrBy(scoreKey, points);
-      await tx.set(voteKey, JSON.stringify(vote));
+      await tx.set(voteKey, JSON.stringify(freshVote));
       await tx.exec();
       
       console.log(`Awarded ${points} points to user ${userId} for ${day}`);
     } finally {
-      await context.redis.del(lockKey);
+      await releaseLock(context, lockKey, lockId, 'award');
     }
   } catch (error) {
     console.error(`Error awarding points to user ${userId} for ${day}:`, error);
