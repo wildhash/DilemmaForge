@@ -30,13 +30,18 @@ Devvit.configure({
  * @param fallback - Value to return if parsing fails
  * @returns Parsed object or fallback
  */
-function safeJSONParse<T>(data: string | null, fallback: T): T {
-  if (!data) return fallback;
+function safeJSONParse<T>(data: string | null | undefined): T | null;
+function safeJSONParse<T>(data: string | null | undefined, fallback: T): T;
+function safeJSONParse<T>(
+  data: string | null | undefined,
+  fallback?: T
+): T | null {
+  if (!data) return fallback ?? null;
   try {
     return JSON.parse(data) as T;
   } catch (error) {
     console.error('JSON parse error:', error);
-    return fallback;
+    return fallback ?? null;
   }
 }
 
@@ -54,55 +59,79 @@ async function finalizeDailyResults(
   day: string
 ): Promise<void> {
   try {
-    const finalizedKey = REDIS_KEYS.dailyFinalized(postId, day);
-    const alreadyFinalized = await context.redis.get(finalizedKey);
-    
-    if (alreadyFinalized) {
-      return; // Already processed
-    }
-    
-    // Get vote counts
-    const cooperateKey = REDIS_KEYS.dailyCooperateCount(postId, day);
-    const defectKey = REDIS_KEYS.dailyDefectCount(postId, day);
-    
-    const [cooperateCountStr, defectCountStr] = await Promise.all([
-      context.redis.get(cooperateKey),
-      context.redis.get(defectKey),
-    ]);
-    
-    const cooperateCount = parseInt(cooperateCountStr || '0', 10);
-    const defectCount = parseInt(defectCountStr || '0', 10);
-    
-    if (isNaN(cooperateCount) || isNaN(defectCount)) {
-      console.error(`Invalid vote counts for ${day}: cooperate=${cooperateCountStr}, defect=${defectCountStr}`);
+    const lockKey = REDIS_KEYS.dailyFinalizeLock(postId, day);
+    const lockAcquired = await context.redis.set(lockKey, '1', {
+      nx: true,
+      expiration: new Date(Date.now() + 30_000),
+    });
+
+    if (!lockAcquired) {
       return;
     }
-    
-    if (cooperateCount === 0 && defectCount === 0) {
-      return; // No votes to finalize
+
+    try {
+      const finalizedKey = REDIS_KEYS.dailyFinalized(postId, day);
+
+      const resultsKey = REDIS_KEYS.dailyResults(postId, day);
+      const [alreadyFinalized, existingResultsData] = await Promise.all([
+        context.redis.get(finalizedKey),
+        context.redis.get(resultsKey),
+      ]);
+
+      if (existingResultsData) {
+        if (!alreadyFinalized) {
+          await context.redis.set(finalizedKey, 'true');
+        }
+        return;
+      }
+      
+      // Get vote counts
+      const cooperateKey = REDIS_KEYS.dailyCooperateCount(postId, day);
+      const defectKey = REDIS_KEYS.dailyDefectCount(postId, day);
+      
+      const [cooperateCountStr, defectCountStr] = await Promise.all([
+        context.redis.get(cooperateKey),
+        context.redis.get(defectKey),
+      ]);
+      
+      const cooperateCount = parseInt(cooperateCountStr || '0', 10);
+      const defectCount = parseInt(defectCountStr || '0', 10);
+      
+      if (isNaN(cooperateCount) || isNaN(defectCount)) {
+        console.error(`Invalid vote counts for ${day}: cooperate=${cooperateCountStr}, defect=${defectCountStr}`);
+        return;
+      }
+      
+      if (cooperateCount === 0 && defectCount === 0) {
+        return; // No votes to finalize
+      }
+      
+      // Calculate results
+      const { outcome, pointsForCooperators, pointsForDefectors } = 
+        calculateResults(cooperateCount, defectCount);
+      
+      // Store finalized results
+      const results: DailyResults = {
+        day,
+        totalVotes: cooperateCount + defectCount,
+        cooperateCount,
+        defectCount,
+        cooperatePercent: (cooperateCount / (cooperateCount + defectCount)) * 100,
+        defectPercent: (defectCount / (cooperateCount + defectCount)) * 100,
+        outcome,
+        pointsForCooperators,
+        pointsForDefectors,
+      };
+
+      await context.redis.mSet({
+        [resultsKey]: JSON.stringify(results),
+        [finalizedKey]: 'true',
+      });
+      
+      console.log(`Finalized results for ${day}: ${outcome} (${cooperateCount}C/${defectCount}D)`);
+    } finally {
+      await context.redis.del(lockKey);
     }
-    
-    // Calculate results
-    const { outcome, pointsForCooperators, pointsForDefectors } = 
-      calculateResults(cooperateCount, defectCount);
-    
-    // Store finalized results
-    const results: DailyResults = {
-      day,
-      totalVotes: cooperateCount + defectCount,
-      cooperateCount,
-      defectCount,
-      cooperatePercent: (cooperateCount / (cooperateCount + defectCount)) * 100,
-      defectPercent: (defectCount / (cooperateCount + defectCount)) * 100,
-      outcome,
-      pointsForCooperators,
-      pointsForDefectors,
-    };
-    
-    await context.redis.set(REDIS_KEYS.dailyResults(postId, day), JSON.stringify(results));
-    await context.redis.set(finalizedKey, 'true');
-    
-    console.log(`Finalized results for ${day}: ${outcome} (${cooperateCount}C/${defectCount}D)`);
   } catch (error) {
     console.error(`Error finalizing results for ${day}:`, error);
     // Don't throw - allow app to continue
@@ -125,55 +154,78 @@ async function awardUserPoints(
   day: string
 ): Promise<void> {
   try {
-    // Check if already awarded
-    const voteKey = REDIS_KEYS.userVote(postId, userId, day);
-    const voteData = await context.redis.get(voteKey);
-    
-    if (!voteData) return;
-    
-    const vote = safeJSONParse<UserVote>(voteData, null as any);
-    if (!vote || !vote.choice) {
-      console.error(`Invalid vote data for user ${userId} on ${day}`);
+    const lockKey = REDIS_KEYS.userAwardLock(postId, userId, day);
+    const lockAcquired = await context.redis.set(lockKey, '1', {
+      nx: true,
+      expiration: new Date(Date.now() + 30_000),
+    });
+
+    if (!lockAcquired) {
       return;
     }
-    
-    // Check if points already awarded
-    if ((vote as any).pointsAwarded) return;
-    
-    // Get finalized results
-    const resultsKey = REDIS_KEYS.dailyResults(postId, day);
-    const resultsData = await context.redis.get(resultsKey);
-    
-    if (!resultsData) return;
-    
-    const results = safeJSONParse<DailyResults>(resultsData, null as any);
-    if (!results) {
-      console.error(`Invalid results data for ${day}`);
-      return;
-    }
-    
-    // Determine points based on user's choice
-    const points = vote.choice === 'cooperate' 
-      ? results.pointsForCooperators 
-      : results.pointsForDefectors;
-    
-    // Update user stats with points
-    const statsKey = REDIS_KEYS.userStats(postId, userId);
-    const statsData = await context.redis.get(statsKey);
-    
-    if (statsData) {
-      const stats = safeJSONParse<UserStats>(statsData, null as any);
-      if (stats) {
-        stats.totalScore += points;
-        await context.redis.set(statsKey, JSON.stringify(stats));
+
+    try {
+      // Check if already awarded
+      const voteKey = REDIS_KEYS.userVote(postId, userId, day);
+      const voteData = await context.redis.get(voteKey);
+      
+      if (!voteData) return;
+      
+      const vote = safeJSONParse<UserVote>(voteData);
+      if (!vote?.choice) {
+        console.error(`Invalid vote data for user ${userId} on ${day}`);
+        return;
       }
+      
+      // Check if points already awarded
+      if (vote.pointsAwarded) return;
+      
+      // Get finalized results
+      const resultsKey = REDIS_KEYS.dailyResults(postId, day);
+      let resultsData = await context.redis.get(resultsKey);
+      
+      if (!resultsData) {
+        await finalizeDailyResults(context, postId, day);
+        resultsData = await context.redis.get(resultsKey);
+      }
+
+      if (!resultsData) return;
+      
+      const results = safeJSONParse<DailyResults>(resultsData);
+      if (!results) {
+        console.error(`Invalid results data for ${day}`);
+        return;
+      }
+      
+      // Determine points based on user's choice
+      const points = vote.choice === 'cooperate' 
+        ? results.pointsForCooperators 
+        : results.pointsForDefectors;
+
+      vote.pointsAwarded = true;
+      vote.pointsAwardedAt = Date.now();
+
+      const scoreKey = REDIS_KEYS.userScore(postId, userId);
+      const existingScore = await context.redis.get(scoreKey);
+      if (!existingScore) {
+        const statsKey = REDIS_KEYS.userStats(postId, userId);
+        const statsData = await context.redis.get(statsKey);
+        const stats = safeJSONParse<UserStats>(statsData);
+        if (stats && typeof stats.totalScore === 'number' && !isNaN(stats.totalScore)) {
+          await context.redis.set(scoreKey, String(stats.totalScore), { nx: true });
+        }
+      }
+
+      const tx = await context.redis.watch(voteKey, scoreKey);
+      await tx.multi();
+      await tx.incrBy(scoreKey, points);
+      await tx.set(voteKey, JSON.stringify(vote));
+      await tx.exec();
+      
+      console.log(`Awarded ${points} points to user ${userId} for ${day}`);
+    } finally {
+      await context.redis.del(lockKey);
     }
-    
-    // Mark vote as awarded
-    (vote as any).pointsAwarded = true;
-    await context.redis.set(voteKey, JSON.stringify(vote));
-    
-    console.log(`Awarded ${points} points to user ${userId} for ${day}`);
   } catch (error) {
     console.error(`Error awarding points to user ${userId} for ${day}:`, error);
     // Don't throw - allow app to continue
@@ -195,13 +247,13 @@ Devvit.addCustomPostType({
     const currentDay = getCurrentDay();
 
     // Load user's vote for today
-    const { data: todayVote, loading: voteLoading } = useAsync(async () => {
+    const { data: todayVote, loading: voteLoading } = useAsync<any>(async () => {
       const voteKey = REDIS_KEYS.userVote(postId, userId, currentDay);
       const voteData = await context.redis.get(voteKey);
       
       if (voteData) {
-        const vote = safeJSONParse<UserVote>(voteData, null as any);
-        if (vote && vote.choice) {
+        const vote = safeJSONParse<UserVote>(voteData);
+        if (vote?.choice) {
           setHasVotedToday(true);
           setUserChoice(vote.choice);
           return vote;
@@ -213,12 +265,12 @@ Devvit.addCustomPostType({
     });
 
     // Load today's results
-    const { data: todayResults, loading: resultsLoading } = useAsync(async () => {
+    const { data: todayResults, loading: resultsLoading } = useAsync<any>(async () => {
       const resultsKey = REDIS_KEYS.dailyResults(postId, currentDay);
       const resultsData = await context.redis.get(resultsKey);
       
       if (resultsData) {
-        const results = safeJSONParse<DailyResults>(resultsData, null as any);
+        const results = safeJSONParse<DailyResults>(resultsData);
         if (results) return results;
       }
       
@@ -257,9 +309,9 @@ Devvit.addCustomPostType({
     });
 
     // Load user stats
-    const { data: userStats, loading: statsLoading } = useAsync(async () => {
+    const { data: userStats, loading: statsLoading } = useAsync<any>(async () => {
       const statsKey = REDIS_KEYS.userStats(postId, userId);
-      const statsData = await context.redis.get(statsKey);
+      const scoreKey = REDIS_KEYS.userScore(postId, userId);
       
       // Check and finalize yesterday if needed
       const yesterday = new Date();
@@ -274,14 +326,29 @@ Devvit.addCustomPostType({
       
       // Reload stats after potential point award
       const updatedStatsData = await context.redis.get(statsKey);
+
+      const scoreData = await context.redis.get(scoreKey);
       
       if (updatedStatsData) {
-        const stats = safeJSONParse<UserStats>(updatedStatsData, null as any);
-        if (stats) return stats;
+        const stats = safeJSONParse<UserStats>(updatedStatsData);
+        if (stats) {
+          const totalScore = scoreData
+            ? parseInt(scoreData || '0', 10) || 0
+            : (typeof stats.totalScore === 'number' ? stats.totalScore : 0);
+
+          if (!scoreData && totalScore > 0) {
+            await context.redis.set(scoreKey, String(totalScore), { nx: true });
+          }
+
+          stats.totalScore = totalScore;
+          return stats;
+        }
       }
+
+      const totalScore = parseInt(scoreData || '0', 10) || 0;
       
       return {
-        totalScore: 0,
+        totalScore,
         currentStreak: 0,
         longestStreak: 0,
         totalVotes: 0,
@@ -305,8 +372,25 @@ Devvit.addCustomPostType({
           day: currentDay,
         };
         
-        // Save vote
-        await context.redis.set(voteKey, JSON.stringify(vote));
+        // Save vote (NX to avoid double-voting under rapid taps / concurrency)
+        const setResult = await context.redis.set(voteKey, JSON.stringify(vote), {
+          nx: true,
+        });
+
+        if (!setResult) {
+          const existingVoteData = await context.redis.get(voteKey);
+          const existingVote = safeJSONParse<UserVote>(existingVoteData);
+          if (existingVote?.choice) {
+            setHasVotedToday(true);
+            setUserChoice(existingVote.choice);
+          }
+          
+          context.ui.showToast({
+            text: 'You already voted today',
+            appearance: 'neutral',
+          });
+          return;
+        }
         
         // Increment count
         if (choice === 'cooperate') {
@@ -328,10 +412,22 @@ Devvit.addCustomPostType({
         // Update user stats (without points yet - awarded at midnight)
         const statsKey = REDIS_KEYS.userStats(postId, userId);
         const currentStatsData = await context.redis.get(statsKey);
+        const scoreKey = REDIS_KEYS.userScore(postId, userId);
+        const scoreData = await context.redis.get(scoreKey);
+        let totalScore = scoreData ? parseInt(scoreData || '0', 10) || 0 : 0;
+        if (!scoreData && currentStatsData) {
+          const existingStats = safeJSONParse<UserStats>(currentStatsData);
+          if (existingStats && typeof existingStats.totalScore === 'number' && !isNaN(existingStats.totalScore)) {
+            totalScore = existingStats.totalScore;
+            if (totalScore > 0) {
+              await context.redis.set(scoreKey, String(totalScore), { nx: true });
+            }
+          }
+        }
         const currentStats: UserStats = safeJSONParse<UserStats>(
           currentStatsData,
           {
-            totalScore: 0,
+            totalScore,
             currentStreak: 0,
             longestStreak: 0,
             totalVotes: 0,
@@ -340,6 +436,8 @@ Devvit.addCustomPostType({
             history: [],
           }
         );
+
+        currentStats.totalScore = totalScore;
         
         // Update stats (points will be added at midnight reveal)
         const updatedStats = updateUserStats(currentStats, newHistoryEntry, 0);
@@ -528,17 +626,34 @@ Devvit.addCustomPostType({
 
     // Render history view
     if (currentView === 'history') {
-      // Parse history entries
-      const parsedHistory = userStats?.history?.map(h => {
-        if (typeof h === 'string') {
-          try {
-            return JSON.parse(h);
-          } catch {
-            return { day: h, choice: 'cooperate' as Choice };
+      const parsedHistory = (userStats?.history ?? [])
+        .map((h) => {
+          if (typeof h !== 'string') {
+            if (h && typeof h.day === 'string' && (h.choice === null || isValidChoice(h.choice))) {
+              return h;
+            }
+            return null;
           }
-        }
-        return h;
-      }) || [];
+
+          if (/^\d{4}-\d{2}-\d{2}$/.test(h)) {
+            return { day: h, choice: null as Choice };
+          }
+
+          try {
+            const parsed = JSON.parse(h);
+            if (
+              parsed &&
+              typeof parsed.day === 'string' &&
+              (parsed.choice === null || isValidChoice(parsed.choice))
+            ) {
+              return { day: parsed.day, choice: parsed.choice };
+            }
+          } catch {
+            // Ignore
+          }
+          return null;
+        })
+        .filter((h): h is { day: string; choice: Choice } => h !== null);
 
       return (
         <vstack alignment="center top" height="100%" gap="medium" padding="large">
@@ -552,8 +667,9 @@ Devvit.addCustomPostType({
           <spacer size="small" />
 
           <vstack gap="small" width="100%">
-            <hstack alignment="space-between middle" width="100%">
+            <hstack alignment="start middle" width="100%">
               <text size="medium" weight="bold">Emoji Grid</text>
+              <spacer grow />
               <button 
                 size="small" 
                 onPress={() => {
@@ -570,7 +686,7 @@ Devvit.addCustomPostType({
                 📋 Copy
               </button>
             </hstack>
-            <text style="monospace" size="small">
+            <text size="small">
               {parsedHistory.length > 0
                 ? generateShareGrid(parsedHistory.slice(-30))
                 : 'No votes yet'}

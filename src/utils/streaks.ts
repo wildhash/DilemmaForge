@@ -125,13 +125,12 @@ export function updateUserStats(
     { day: newVote.day, choice: newVote.choice },
   ];
 
-  // Parse history entries: Some may be strings (legacy format), others are objects
-  // Default to 'cooperate' for unparseable entries to maintain backwards compatibility
-  const { currentStreak, longestStreak } = calculateStreak(
-    history.map(h => typeof h === 'string' ? 
-      parseHistoryEntry(h) : h
-    )
-  );
+  // Parse legacy string history entries and ignore corrupted entries.
+  const normalizedHistory = history
+    .map((h) => normalizeHistoryEntry(h))
+    .filter((h): h is { day: string; choice: Choice } => h !== null);
+
+  const { currentStreak, longestStreak } = calculateStreak(normalizedHistory);
 
   return {
     totalScore: currentStats.totalScore + points,
@@ -140,7 +139,7 @@ export function updateUserStats(
     totalVotes: currentStats.totalVotes + 1,
     cooperateCount: currentStats.cooperateCount + (newVote.choice === 'cooperate' ? 1 : 0),
     defectCount: currentStats.defectCount + (newVote.choice === 'defect' ? 1 : 0),
-    history: history.map(h => typeof h === 'string' ? h : JSON.stringify(h)),
+    history: normalizedHistory,
   };
 }
 
@@ -156,22 +155,46 @@ export function isValidChoice(choice: any): choice is Choice {
 }
 
 /**
- * Safely parses a history entry string.
- * Handles legacy format gracefully, defaulting to cooperate if parsing fails.
+* Parses a history entry string.
+* Handles legacy formats and ignores corrupted data.
  * 
  * @param entry - String to parse (expected to be JSON-serialized history entry)
- * @returns Parsed history entry, or default cooperate entry if parsing fails
+* @returns Parsed history entry, or null if unparseable
  * @internal
  */
-function parseHistoryEntry(entry: string): { day: string; choice: Choice } {
+function parseHistoryEntry(entry: string): { day: string; choice: Choice } | null {
   try {
     const parsed = JSON.parse(entry);
-    if (parsed && typeof parsed.day === 'string' && isValidChoice(parsed.choice)) {
-      return parsed;
+    if (
+      parsed &&
+      typeof parsed.day === 'string' &&
+      (parsed.choice === null || isValidChoice(parsed.choice))
+    ) {
+      return { day: parsed.day, choice: parsed.choice };
     }
   } catch {
-    // Fall through to default
+    // Fall through
   }
-  // Default to 'cooperate' for unparseable entries (backwards compatibility)
-  return { day: entry, choice: 'cooperate' as Choice };
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(entry)) {
+    return { day: entry, choice: null };
+  }
+
+  return null;
+}
+
+function normalizeHistoryEntry(
+  entry: HistoryEntry
+): { day: string; choice: Choice } | null {
+  if (typeof entry === 'string') {
+    return parseHistoryEntry(entry);
+  }
+
+  if (entry && typeof entry.day === 'string') {
+    if (entry.choice === null || isValidChoice(entry.choice)) {
+      return entry;
+    }
+  }
+
+  return null;
 }

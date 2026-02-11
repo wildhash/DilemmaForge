@@ -13,7 +13,10 @@
  * - Daily counts: post:{postId}:day:{YYYY-MM-DD}:cooperate|defect
  * - Daily results: post:{postId}:day:{YYYY-MM-DD}:results
  * - Finalization: post:{postId}:day:{YYYY-MM-DD}:finalized
+  * - Finalization lock: post:{postId}:day:{YYYY-MM-DD}:finalize_lock
  * - User data: post:{postId}:user:{userId}:stats|history
+  * - User score: post:{postId}:user:{userId}:score
+  * - Award lock: post:{postId}:user:{userId}:day:{YYYY-MM-DD}:award_lock
  */
 export const REDIS_KEYS = {
   /**
@@ -73,6 +76,17 @@ export const REDIS_KEYS = {
     `post:${postId}:day:${day}:finalized`,
 
   /**
+   * Lock key for finalizing daily results.
+   * Value: short-lived string, used with NX + expiration.
+   *
+   * @param postId - The post ID
+   * @param day - ISO date string (YYYY-MM-DD)
+   * @returns Redis key string
+   */
+  dailyFinalizeLock: (postId: string, day: string): string =>
+    `post:${postId}:day:${day}:finalize_lock`,
+
+  /**
    * Key for storing user statistics.
    * Value: JSON-serialized UserStats object
    * 
@@ -84,6 +98,17 @@ export const REDIS_KEYS = {
     `post:${postId}:user:${userId}:stats`,
 
   /**
+   * Key for storing user score as an integer.
+   * Value: Integer as string
+   *
+   * @param postId - The post ID
+   * @param userId - The user ID
+   * @returns Redis key string
+   */
+  userScore: (postId: string, userId: string): string =>
+    `post:${postId}:user:${userId}:score`,
+
+  /**
    * Key for storing user voting history.
    * Value: JSON array of history entries
    * 
@@ -93,6 +118,18 @@ export const REDIS_KEYS = {
    */
   userHistory: (postId: string, userId: string): string => 
     `post:${postId}:user:${userId}:history`,
+
+  /**
+   * Lock key for awarding points for a specific user/day.
+   * Value: short-lived string, used with NX + expiration.
+   *
+   * @param postId - The post ID
+   * @param userId - The user ID
+   * @param day - ISO date string (YYYY-MM-DD)
+   * @returns Redis key string
+   */
+  userAwardLock: (postId: string, userId: string, day: string): string =>
+    `post:${postId}:user:${userId}:day:${day}:award_lock`,
 } as const;
 
 /**

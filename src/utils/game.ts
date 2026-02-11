@@ -18,6 +18,11 @@ export interface UserVote {
   timestamp: number;
   /** ISO date string in format YYYY-MM-DD (UTC) */
   day: string;
+
+  /** Whether points for this vote have been awarded (set after results finalize) */
+  pointsAwarded?: boolean;
+  /** Unix timestamp (ms) when points were awarded */
+  pointsAwardedAt?: number;
 }
 
 /**
@@ -46,7 +51,7 @@ export interface DailyResults {
 
 /**
  * History entry format - can be either string (legacy) or object.
- * String format: JSON-serialized {day: string, choice: Choice}
+* String format: JSON-serialized {day: string, choice: Choice} (legacy) or YYYY-MM-DD day string (older legacy)
  * Object format: {day: string, choice: Choice}
  */
 export type HistoryEntry = string | { day: string; choice: Choice };
