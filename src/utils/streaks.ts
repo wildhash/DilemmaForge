@@ -1,7 +1,36 @@
 // Enhanced game utilities with streak tracking
 
-import { Choice, UserStats } from './game.js';
+import { Choice, UserStats, HistoryEntry } from './game.js';
 
+/**
+ * Calculates current and longest voting streaks from history.
+ * 
+ * A streak is defined as consecutive days with votes, without any gaps.
+ * Current streak counts backwards from today, longest streak is the maximum
+ * consecutive sequence found in all history.
+ * 
+ * @param history - Array of voting history entries with day and choice
+ * @returns Object with currentStreak (days from today) and longestStreak (all-time max)
+ * 
+ * @example
+ * // User voted 3 consecutive days ending today
+ * calculateStreak([
+ *   { day: '2026-02-09', choice: 'cooperate' },
+ *   { day: '2026-02-10', choice: 'defect' },
+ *   { day: '2026-02-11', choice: 'cooperate' }
+ * ])
+ * // => { currentStreak: 3, longestStreak: 3 }
+ * 
+ * @example
+ * // User has a gap in voting history
+ * calculateStreak([
+ *   { day: '2026-02-08', choice: 'cooperate' },
+ *   { day: '2026-02-09', choice: 'cooperate' },
+ *   // gap on 2026-02-10
+ *   { day: '2026-02-11', choice: 'cooperate' }
+ * ])
+ * // => { currentStreak: 1, longestStreak: 2 }
+ */
 export function calculateStreak(history: { day: string; choice: Choice }[]): {
   currentStreak: number;
   longestStreak: number;
@@ -68,6 +97,24 @@ export function calculateStreak(history: { day: string; choice: Choice }[]): {
   return { currentStreak, longestStreak };
 }
 
+/**
+ * Updates user statistics after a new vote is cast.
+ * 
+ * Handles legacy history format (strings) and new format (objects).
+ * Recalculates streaks and increments counters.
+ * 
+ * @param currentStats - Current user statistics
+ * @param newVote - New vote to add to history
+ * @param points - Points to award for this vote (usually 0 until finalized)
+ * @returns Updated UserStats with new vote incorporated
+ * 
+ * @example
+ * updateUserStats(
+ *   { totalScore: 10, currentStreak: 2, longestStreak: 5, ... },
+ *   { choice: 'cooperate', day: '2026-02-11' },
+ *   0 // Points awarded later at midnight
+ * )
+ */
 export function updateUserStats(
   currentStats: UserStats,
   newVote: { choice: Choice; day: string },
@@ -81,7 +128,9 @@ export function updateUserStats(
   // Parse history entries: Some may be strings (legacy format), others are objects
   // Default to 'cooperate' for unparseable entries to maintain backwards compatibility
   const { currentStreak, longestStreak } = calculateStreak(
-    history.map(h => typeof h === 'string' ? { day: h, choice: 'cooperate' as Choice } : h)
+    history.map(h => typeof h === 'string' ? 
+      parseHistoryEntry(h) : h
+    )
   );
 
   return {
@@ -95,6 +144,34 @@ export function updateUserStats(
   };
 }
 
+/**
+ * Validates that a value is a valid Choice type.
+ * Type guard for runtime validation.
+ * 
+ * @param choice - Value to validate
+ * @returns True if choice is 'cooperate' or 'defect', false otherwise
+ */
 export function isValidChoice(choice: any): choice is Choice {
   return choice === 'cooperate' || choice === 'defect';
+}
+
+/**
+ * Safely parses a history entry string.
+ * Handles legacy format gracefully, defaulting to cooperate if parsing fails.
+ * 
+ * @param entry - String to parse (expected to be JSON-serialized history entry)
+ * @returns Parsed history entry, or default cooperate entry if parsing fails
+ * @internal
+ */
+function parseHistoryEntry(entry: string): { day: string; choice: Choice } {
+  try {
+    const parsed = JSON.parse(entry);
+    if (parsed && typeof parsed.day === 'string' && isValidChoice(parsed.choice)) {
+      return parsed;
+    }
+  } catch {
+    // Fall through to default
+  }
+  // Default to 'cooperate' for unparseable entries (backwards compatibility)
+  return { day: entry, choice: 'cooperate' as Choice };
 }
